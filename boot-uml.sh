@@ -30,36 +30,73 @@ export LD_LIBRARY_PATH="$VDE_NET/lib:${LD_LIBRARY_PATH:-}"
 # UML backs guest RAM with a real mmap'd file on this directory (defaults to
 # /dev/shm if TMPDIR is unset, matching UML's own probe order). That file is
 # paged in lazily as the guest touches memory, so a guest that boots fine can
-# still panic with a host bus error hours later once it touches enough pages
-# to exceed whatever space is actually available there. Containers commonly
-# cap /dev/shm at 64M, far below a 2G guest, so check before booting instead
-# of finding out mid-session.
+# still crash with a host bus error and a full kernel panic hours later, once
+# it touches enough pages to exceed whatever space is actually available.
+# Containers commonly cap /dev/shm at 64M, far below a 2G guest, and that
+# panic kills the guest and loses the session, so this fails closed by
+# default instead of only warning. tmpfs pages are also charged against the
+# container's cgroup memory limit, so a roomy filesystem alone is not
+# sufficient, whichever constraint (filesystem or cgroup) is tighter wins.
 mem_bytes() {
-  local n="${1%[KkMmGg]}" unit="${1: -1}"
+  local raw="$1"
+  [[ "$raw" =~ ^[0-9]+[KkMmGg]?$ ]] || return 1
+  local n="${raw%[KkMmGg]}" unit="${raw: -1}"
   case "$unit" in
     [Gg]) echo $((n * 1024 * 1024 * 1024)) ;;
     [Mm]) echo $((n * 1024 * 1024)) ;;
     [Kk]) echo $((n * 1024)) ;;
-    *) echo "$1" ;;
+    *) echo "$n" ;;
   esac
 }
-shm_dir="${TMPDIR:-/dev/shm}"
-if [[ -d "$shm_dir" ]]; then
-  avail_kb="$(df -Pk "$shm_dir" 2>/dev/null | awk 'NR==2 {print $4}')"
-  if [[ -n "$avail_kb" ]]; then
+
+if need_bytes="$(mem_bytes "$UML_MEMORY")"; then
+  # Headroom beyond the raw guest RAM request: UML's own bookkeeping and
+  # TT/SKAS overhead use a bit more than mem= alone.
+  mem_check_margin=$((64 * 1024 * 1024))
+  avail_bytes=""
+
+  shm_dir="${TMPDIR:-/dev/shm}"
+  if [[ -d "$shm_dir" ]] \
+    && avail_kb="$(LC_ALL=C df -Pk "$shm_dir" 2>/dev/null | awk 'NR==2 {print $4}')" \
+    && [[ "$avail_kb" =~ ^[0-9]+$ ]]; then
     avail_bytes=$((avail_kb * 1024))
-    need_bytes="$(mem_bytes "$UML_MEMORY")"
-    if (( avail_bytes < need_bytes )); then
+  fi
+
+  cgroup_avail=""
+  if [[ -r /sys/fs/cgroup/memory.max && -r /sys/fs/cgroup/memory.current ]]; then
+    cg_max="$(cat /sys/fs/cgroup/memory.max 2>/dev/null || true)"
+    cg_cur="$(cat /sys/fs/cgroup/memory.current 2>/dev/null || true)"
+    [[ "$cg_max" =~ ^[0-9]+$ && "$cg_cur" =~ ^[0-9]+$ ]] && cgroup_avail=$((cg_max - cg_cur))
+  elif [[ -r /sys/fs/cgroup/memory/memory.limit_in_bytes && -r /sys/fs/cgroup/memory/memory.usage_in_bytes ]]; then
+    cg_max="$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || true)"
+    cg_cur="$(cat /sys/fs/cgroup/memory/memory.usage_in_bytes 2>/dev/null || true)"
+    # cgroup v1 signals "unlimited" with a huge sentinel rather than a
+    # keyword; anything above 1T is treated as no real constraint.
+    if [[ "$cg_max" =~ ^[0-9]+$ && "$cg_cur" =~ ^[0-9]+$ && "$cg_max" -lt $((1024 * 1024 * 1024 * 1024)) ]]; then
+      cgroup_avail=$((cg_max - cg_cur))
+    fi
+  fi
+  if [[ -n "$cgroup_avail" ]] && { [[ -z "$avail_bytes" ]] || (( cgroup_avail < avail_bytes )); }; then
+    avail_bytes="$cgroup_avail"
+  fi
+
+  if [[ -n "$avail_bytes" ]] && (( avail_bytes < need_bytes + mem_check_margin )); then
+    if [[ "${UML_ALLOW_MEMORY_OVERCOMMIT:-}" == "1" ]]; then
+      echo "warning: only ${avail_bytes}B available toward mem=$UML_MEMORY plus headroom. Booting anyway because UML_ALLOW_MEMORY_OVERCOMMIT=1 is set." >&2
+    else
       cat >&2 <<EOF
-warning: $shm_dir has $((avail_bytes / 1024 / 1024))M free, but mem=$UML_MEMORY
-needs up to that much for the guest's RAM backing file. The guest may boot
-fine and then hit a host bus error later once it touches enough memory to
-exceed what is actually available here.
+error: only $((avail_bytes / 1024 / 1024))M is available for UML's RAM-backing
+file, but mem=$UML_MEMORY needs that much plus headroom. Booting anyway risks
+a host bus error and a full kernel panic mid-session, killing the guest.
 
 Fix by pointing UML at a roomier directory, or lowering the memory request:
   TMPDIR=/tmp $SELF_DIR/boot-uml.sh
   UML_MEMORY=768M $SELF_DIR/boot-uml.sh
+
+Or boot anyway at your own risk:
+  UML_ALLOW_MEMORY_OVERCOMMIT=1 $SELF_DIR/boot-uml.sh
 EOF
+      exit 1
     fi
   fi
 fi

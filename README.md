@@ -50,7 +50,7 @@ The worked example in [`examples/databricks-fuse-mount/`](examples/databricks-fu
 
 ## UML networking
 
-UML uses hostfs and rootless VDE SLiRP networking:
+UML uses hostfs and rootless VDE SLiRP networking. This is what `boot-uml.sh` runs under the hood, use the wrapper rather than this directly, it also checks `mem=` against available host memory before booting (see below):
 
 ```bash
 ~/linux-fuse.um mem=2G rootfstype=hostfs rootflags=/ rw init=~/uml-init.sh \
@@ -62,6 +62,14 @@ Linux removed `CONFIG_UML_NET`, `CONFIG_UML_NET_SLIRP`, and the legacy `eth0=` s
 Minimal guests may lack `ip`, so the printed setup uses `ifconfig` and `route`. hostfs preserves the real host user's ownership even for guest-root; DNS therefore uses a writable scratch file bind-mounted over `/etc/resolv.conf`.
 
 `~/uml-init.sh` is PID-1-safe. PID 1 exiting always panics Linux with `Attempted to kill init!`, so the wrapper respawns a fresh shell instead of using `init=/bin/bash` directly.
+
+UML backs guest RAM with a real mmap'd file on `$TMPDIR` (or `/dev/shm` if unset), paged in lazily as the guest touches memory. Containers commonly cap `/dev/shm` at 64M, far below the 2G default, and a guest that boots fine can still crash with a host bus error and a full kernel panic hours later once it runs out of room there. `boot-uml.sh` checks available space (filesystem and cgroup memory limit, whichever is tighter) against `mem=` before booting and refuses to start if it looks insufficient:
+
+```bash
+TMPDIR=/tmp ~/boot-uml.sh          # point at a roomier directory
+UML_MEMORY=768M ~/boot-uml.sh      # or ask for less memory
+UML_ALLOW_MEMORY_OVERCOMMIT=1 ~/boot-uml.sh   # boot anyway, at your own risk
+```
 
 ## Build workflows
 

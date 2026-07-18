@@ -124,11 +124,32 @@ export PATH="$DEST/vde-net/bin:\$PATH"
 export LD_LIBRARY_PATH="$DEST/vde-net/lib:\${LD_LIBRARY_PATH:-}"
 cd "\$HOME" 2>/dev/null || cd /
 export PS1='[uml guest] \w # '
+
+# One-time boot setup, not in the respawn loop below: proc/devtmpfs need
+# mounting once, not on every \`exit\`, and re-running ifconfig/route on an
+# already-configured interface just errors noisily on the second pass.
+mount -t proc proc /proc 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+[ -c /dev/fuse ] || mknod /dev/fuse c 10 229 2>/dev/null || true
+chmod 666 /dev/fuse 2>/dev/null || true
+
+if [ -e /sys/class/net/vec0 ]; then
+  ifconfig lo up 2>/dev/null || true
+  ifconfig vec0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null || true
+  route add default gw 10.0.2.2 vec0 2>/dev/null || true
+  mkdir -p /tmp
+  printf 'nameserver 10.0.2.3\n' > /tmp/resolv.conf
+  # hostfs enforces the real host user's ownership even for guest-root, so
+  # writing /etc/resolv.conf directly usually fails with Permission denied.
+  mount --bind /tmp/resolv.conf /etc/resolv.conf 2>/dev/null || true
+fi
+
 cat <<'BANNER'
 ================================================================
-UML guest ready. \`exit\` only closes this shell, PID 1 respawns
-a new one instantly so the kernel does not panic. To actually
-shut the guest down, run:  poweroff -f
+UML guest ready. proc, /dev/fuse, and vec0 networking are already
+set up. \`exit\` only closes this shell, PID 1 respawns a new one
+instantly so the kernel does not panic. To actually shut the
+guest down, run:  poweroff -f
 ================================================================
 BANNER
 while true; do

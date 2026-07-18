@@ -191,6 +191,10 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/master/install.sh" | bash -s -- uml
           \`\`\`
 
+          The rest of this section is for that standalone/manual case; the
+          install.sh-generated \`uml-init.sh\` already does all of it for you
+          automatically on boot.
+
           To fetch just this toolchain standalone (for example if you manage
           the kernel and \`uml-init.sh\` yourself):
 

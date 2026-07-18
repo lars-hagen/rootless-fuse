@@ -27,20 +27,12 @@ fi
 export PATH="$VDE_NET/bin:$PATH"
 export LD_LIBRARY_PATH="$VDE_NET/lib:${LD_LIBRARY_PATH:-}"
 
-cat >&2 <<'EOF'
-After the guest shell appears, run inside UML:
-
-  mount -t proc proc /proc
-  mount -t devtmpfs devtmpfs /dev
-  mknod /dev/fuse c 10 229 && chmod 666 /dev/fuse
-
-  ifconfig lo up
-  ifconfig vec0 10.0.2.15 netmask 255.255.255.0 up
-  route add default gw 10.0.2.2 vec0
-  mkdir -p /tmp && printf 'nameserver 10.0.2.3\n' > /tmp/resolv.conf
-  mount --bind /tmp/resolv.conf /etc/resolv.conf
-
-The resolv.conf bind mount avoids hostfs ownership checks on the host file.
+cat >&2 <<EOF
+The default $UML_INIT (written by install.sh) mounts proc/devtmpfs,
+creates /dev/fuse, and brings up vec0 networking automatically before
+handing you a shell. If you passed a custom UML_INIT that skips this,
+see the "One-time boot setup" block in a stock uml-init.sh for the
+commands to run yourself.
 EOF
 
 exec "$UML_KERNEL" "mem=$UML_MEMORY" rootfstype=hostfs rootflags=/ rw "init=$UML_INIT" \

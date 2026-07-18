@@ -309,7 +309,9 @@ jobs:
 
           This also fetches the [\`Build VDE SLiRP networking toolchain\`](.github/workflows/build-vde-net.yml)
           release and writes \`~/uml-init.sh\`, a PID-1-safe wrapper (a plain
-          \`init=/bin/bash\` panics the kernel the moment you \`exit\`).
+          \`init=/bin/bash\` panics the kernel the moment you \`exit\`) that also
+          mounts proc/devtmpfs, creates \`/dev/fuse\`, and brings up \`vec0\`
+          networking automatically before handing you a shell.
 
           ### Boot on TIKE
 
@@ -317,19 +319,8 @@ jobs:
           # 1. Boot UML (home dir accessible via hostfs, VDE SLiRP networking enabled)
           ~/linux-fuse.um mem=2G rootfstype=hostfs rootflags=/ rw init=~/uml-init.sh 'vec0:transport=vde,vnl=slirp://'
 
-          # 2. Inside UML — /dev/fuse now works because UML has its own kernel
-          mount -t proc proc /proc
-          mount -t devtmpfs devtmpfs /dev
-          mknod /dev/fuse c 10 229 && chmod 666 /dev/fuse
-
-          # 3. Bring up networking (interface is named vec0, not eth0)
-          ifconfig lo up
-          ifconfig vec0 10.0.2.15 netmask 255.255.255.0 up
-          route add default gw 10.0.2.2 vec0
-          mkdir -p /tmp && printf 'nameserver 10.0.2.3\\n' > /tmp/resolv.conf
-          mount --bind /tmp/resolv.conf /etc/resolv.conf
-
-          # 4. Mount a Databricks Unity Catalog volume via fuse4dbricks
+          # 2. /dev/fuse and networking are already up. Mount a Databricks
+          #    Unity Catalog volume via fuse4dbricks:
           export DATABRICKS_HOST="https://<workspace>.cloud.databricks.com"
           export DATABRICKS_TOKEN="<personal-access-token>"
           fuse4dbricks --workspace "\$DATABRICKS_HOST" --no-unified-auth \\

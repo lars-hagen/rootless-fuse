@@ -37,7 +37,7 @@ For `uml`, it downloads the kernel and VDE SLiRP toolchain, then writes `~/uml-i
 ~/boot-uml.sh
 ```
 
-The boot wrapper prints the guest setup commands for proc, devtmpfs, `/dev/fuse`, `vec0`, routing, and DNS before starting UML. A FUSE mount created in either mode is visible only within that mount namespace or UML guest.
+`uml-init.sh` mounts proc and devtmpfs, creates `/dev/fuse`, and brings up `vec0` networking and DNS automatically before handing you a shell, no manual setup needed. A FUSE mount created in either mode is visible only within that mount namespace or UML guest.
 
 The worked example in [`examples/databricks-fuse-mount/`](examples/databricks-fuse-mount/) mounts Databricks Unity Catalog volumes through `fuse4dbricks`. Databricks TIKE motivated the UML fallback, but the probe and wrappers are generic.
 

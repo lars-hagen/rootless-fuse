@@ -5,48 +5,31 @@ REPO="${ROOTLESS_FUSE_REPO:-lars-hagen/rootless-fuse}"
 DEST="${UML_INSTALL_DIR:-$HOME}"
 LOCAL_BIN="${ROOTLESS_FUSE_BIN_DIR:-$HOME/.local/bin}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
-probe_file=""
 
-if [[ "$(uname -m)" != "x86_64" ]]; then
-  echo "error: upstream Linux ARCH=um and the published fallback support x86_64 only (detected $(uname -m))." >&2
-  exit 1
-fi
+usage() {
+  cat >&2 <<EOF
+usage: install.sh <direct|uml>
 
-cleanup() {
-  if [[ -n "$probe_file" ]]; then
-    rm -f "$probe_file"
-  fi
+Run probe.sh first to find out which mode your container supports:
+  curl -fsSL https://raw.githubusercontent.com/$REPO/master/probe.sh | bash
+
+Then install the mode it recommends:
+  install.sh direct   # unprivileged namespace on the host kernel, no download
+  install.sh uml      # boots a User Mode Linux kernel with its own /dev/fuse
+EOF
 }
-trap cleanup EXIT
 
-if [[ -n "${ROOTLESS_FUSE_PROBE:-}" ]]; then
-  probe_cmd=(bash "$ROOTLESS_FUSE_PROBE")
-elif [[ -f "$SCRIPT_DIR/probe.sh" ]]; then
-  probe_cmd=(bash "$SCRIPT_DIR/probe.sh")
-else
-  if ! command -v curl >/dev/null 2>&1; then
-    echo "error: probe.sh is not available locally and curl is unavailable." >&2
-    exit 1
-  fi
-  probe_file="$(mktemp)"
-  curl -fsSL "https://raw.githubusercontent.com/$REPO/master/probe.sh" -o "$probe_file"
-  probe_cmd=(bash "$probe_file")
-fi
+verdict="${1:-${ROOTLESS_FUSE_MODE:-}}"
+verdict="$(printf '%s' "$verdict" | tr '[:lower:]' '[:upper:]')"
 
-set +e
-probe_output="$("${probe_cmd[@]}" 2>&1)"
-probe_status=$?
-set -e
-printf '%s\n' "$probe_output"
-verdict="$(printf '%s\n' "$probe_output" | tail -n 1)"
-
-if [[ "$verdict" == "IMPOSSIBLE" ]]; then
-  echo "error: the capability probe found no actionable rootless FUSE path. See the specific reason above." >&2
+if [[ "$verdict" != "DIRECT" && "$verdict" != "UML" ]]; then
+  usage
   exit 1
 fi
-if ((probe_status != 0)); then
-  echo "error: probe.sh failed before returning a valid verdict." >&2
-  exit "$probe_status"
+
+if [[ "$(uname -m)" != "x86_64" && "$verdict" == "UML" ]]; then
+  echo "error: the UML fallback supports x86_64 hosts only (detected $(uname -m))." >&2
+  exit 1
 fi
 
 if [[ "$verdict" == "DIRECT" ]]; then
@@ -74,10 +57,6 @@ EOF
   exit 0
 fi
 
-if [[ "$verdict" != "UML" ]]; then
-  echo "error: probe.sh returned an unknown verdict: $verdict" >&2
-  exit 1
-fi
 if ! command -v python3 >/dev/null 2>&1; then
   echo "error: UML mode requires python3 to parse the GitHub releases API." >&2
   exit 1

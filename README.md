@@ -16,22 +16,22 @@ Probe without installing:
 curl -fsSL https://raw.githubusercontent.com/lars-hagen/rootless-fuse/master/probe.sh | bash
 ```
 
-The final line is `DIRECT`, `UML`, or `IMPOSSIBLE`. Both `DIRECT` and `UML` exit successfully because both are actionable.
-
-Install the selected path:
+The final line is `DIRECT`, `UML`, or `IMPOSSIBLE`. Both `DIRECT` and `UML` exit successfully because both are actionable. `install.sh` does not probe on its own, pass it the mode the probe recommended:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lars-hagen/rootless-fuse/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lars-hagen/rootless-fuse/master/install.sh | bash -s -- direct
+# or
+curl -fsSL https://raw.githubusercontent.com/lars-hagen/rootless-fuse/master/install.sh | bash -s -- uml
 ```
 
-For `DIRECT`, the installer writes `~/.local/bin/rootless-fuse-shell` and downloads no kernel:
+For `direct`, the installer writes `~/.local/bin/rootless-fuse-shell` and downloads no kernel:
 
 ```bash
 ~/.local/bin/rootless-fuse-shell
 # Start the FUSE mount and all consumers from this shell.
 ```
 
-For `UML`, it downloads the kernel and VDE SLiRP toolchain, then writes `~/uml-init.sh` and `~/boot-uml.sh`:
+For `uml`, it downloads the kernel and VDE SLiRP toolchain, then writes `~/uml-init.sh` and `~/boot-uml.sh`:
 
 ```bash
 ~/boot-uml.sh

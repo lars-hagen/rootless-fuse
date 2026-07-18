@@ -14,7 +14,7 @@ fi
 
 usage() {
   cat >&2 <<EOF
-usage: install.sh <direct|uml>
+usage: install.sh <direct|uml> [--with-databricks]
 
 Run probe.sh first to find out which mode your container supports:
   curl -fsSL https://raw.githubusercontent.com/$REPO/master/probe.sh | bash
@@ -22,10 +22,29 @@ Run probe.sh first to find out which mode your container supports:
 Then install the mode it recommends:
   install.sh direct   # unprivileged namespace on the host kernel, no download
   install.sh uml      # boots a User Mode Linux kernel with its own /dev/fuse
+
+--with-databricks additionally installs mount-fuse4dbricks.sh, the flag
+can go before or after the mode.
 EOF
 }
 
-verdict="${1:-${ROOTLESS_FUSE_MODE:-}}"
+verdict=""
+with_databricks=false
+for arg in "$@"; do
+  case "$arg" in
+    --with-databricks)
+      with_databricks=true
+      ;;
+    *)
+      if [[ -n "$verdict" ]]; then
+        usage
+        exit 1
+      fi
+      verdict="$arg"
+      ;;
+  esac
+done
+verdict="${verdict:-${ROOTLESS_FUSE_MODE:-}}"
 verdict="$(printf '%s' "$verdict" | tr '[:lower:]' '[:upper:]')"
 
 if [[ "$verdict" != "DIRECT" && "$verdict" != "UML" ]]; then
@@ -37,6 +56,24 @@ if [[ "$(uname -m)" != "x86_64" && "$verdict" == "UML" ]]; then
   echo "error: the UML fallback supports x86_64 hosts only (detected $(uname -m))." >&2
   exit 1
 fi
+
+install_databricks() {
+  echo "==> Installing Databricks mount helper into $DEST"
+  mkdir -p "$DEST"
+  if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/examples/databricks-fuse-mount/mount-fuse4dbricks.sh" ]]; then
+    if [[ "$SCRIPT_DIR/examples/databricks-fuse-mount/mount-fuse4dbricks.sh" != "$DEST/mount-fuse4dbricks.sh" ]]; then
+      cp "$SCRIPT_DIR/examples/databricks-fuse-mount/mount-fuse4dbricks.sh" "$DEST/mount-fuse4dbricks.sh"
+    fi
+  else
+    if ! command -v curl >/dev/null 2>&1; then
+      echo "error: --with-databricks requires curl when the local helper is unavailable." >&2
+      exit 1
+    fi
+    curl -fsSL "https://raw.githubusercontent.com/$REPO/master/examples/databricks-fuse-mount/mount-fuse4dbricks.sh" \
+      -o "$DEST/mount-fuse4dbricks.sh"
+  fi
+  chmod +x "$DEST/mount-fuse4dbricks.sh"
+}
 
 if [[ "$verdict" == "DIRECT" ]]; then
   mkdir -p "$LOCAL_BIN"
@@ -61,6 +98,9 @@ fi
 exec unshare --user --map-root-user --mount bash -c "$SETUP"'exec "$@"' bash "$@"
 EOF
   chmod +x "$LOCAL_BIN/rootless-fuse-shell"
+  if $with_databricks; then
+    install_databricks
+  fi
   cat <<EOF
 
 Direct mode installed. No kernel was downloaded.
@@ -71,6 +111,13 @@ Start an interactive rootless FUSE shell:
 Or run one command in the namespace:
   $LOCAL_BIN/rootless-fuse-shell command arg...
 EOF
+  if $with_databricks; then
+    cat <<EOF
+
+Databricks mount helper installed:
+  $DEST/mount-fuse4dbricks.sh
+EOF
+  fi
   exit 0
 fi
 
@@ -170,6 +217,10 @@ else
 fi
 chmod +x "$DEST/boot-uml.sh"
 
+if $with_databricks; then
+  install_databricks
+fi
+
 cat <<EOF
 
 UML mode installed.
@@ -177,3 +228,10 @@ UML mode installed.
 Boot the guest with:
   $DEST/boot-uml.sh
 EOF
+if $with_databricks; then
+  cat <<EOF
+
+Databricks mount helper installed:
+  $DEST/mount-fuse4dbricks.sh
+EOF
+fi

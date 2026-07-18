@@ -24,6 +24,13 @@ curl -fsSL https://raw.githubusercontent.com/lars-hagen/rootless-fuse/master/ins
 curl -fsSL https://raw.githubusercontent.com/lars-hagen/rootless-fuse/master/install.sh | bash -s -- uml
 ```
 
+Add the optional Databricks mount helper in either mode:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lars-hagen/rootless-fuse/master/install.sh | bash -s -- direct --with-databricks
+curl -fsSL https://raw.githubusercontent.com/lars-hagen/rootless-fuse/master/install.sh | bash -s -- uml --with-databricks
+```
+
 For `direct`, the installer writes `~/.local/bin/rootless-fuse-shell` and downloads no kernel:
 
 ```bash

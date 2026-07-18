@@ -13,6 +13,21 @@ This example mounts Databricks Unity Catalog volumes through [`fuse4dbricks`](ht
 
 Conda-forge places `fusermount3` from `libfuse3` in the environment's `sbin/`, not `bin/`. The script adds that directory to `PATH` explicitly.
 
+## Install
+
+Add `--with-databricks` when running the top-level installer. It installs `mount-fuse4dbricks.sh` into `UML_INSTALL_DIR`, or `$HOME` by default:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lars-hagen/rootless-fuse/master/install.sh | bash -s -- <direct|uml> --with-databricks
+```
+
+To download only this helper instead, use:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lars-hagen/rootless-fuse/master/examples/databricks-fuse-mount/mount-fuse4dbricks.sh -o mount-fuse4dbricks.sh
+chmod +x mount-fuse4dbricks.sh
+```
+
 ## Run
 
 ```bash

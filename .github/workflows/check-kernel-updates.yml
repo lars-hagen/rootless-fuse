@@ -1,0 +1,101 @@
+name: Check for UML kernel updates
+
+on:
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: uml-kernel-update-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    env:
+      BASE_IMAGE: amazonlinux:2023
+      BASE_SLUG: amazonlinux-2023
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      GH_TOKEN: ${{ github.token }}
+      KERNEL_SERIES: "6.18"
+
+    steps:
+      - name: Compare kernel.org with published releases
+        id: comparison
+        run: |
+          set -euo pipefail
+
+          latest="$({
+            curl -fsSL https://www.kernel.org/releases.json |
+              jq -r --arg prefix "${KERNEL_SERIES}." \
+                '.releases[].version | select(startswith($prefix))'
+          } | sort -V | tail -n 1)"
+
+          escaped_series="${KERNEL_SERIES//./\.}"
+          if [[ ! "$latest" =~ ^${escaped_series}\.[0-9]+$ ]]; then
+            echo "::error::kernel.org returned an invalid $KERNEL_SERIES version: $latest"
+            exit 1
+          fi
+
+          # Fetch release asset names into a temp file so set -e catches gh failures
+          release_assets="$(mktemp)"
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[].assets[].name' > "$release_assets"
+
+          built_versions=()
+          while IFS= read -r asset; do
+            if [[ "$asset" =~ ^linux-(${escaped_series}\.[0-9]+)-x86_64-${BASE_SLUG}$ ]]; then
+              built_versions+=("${BASH_REMATCH[1]}")
+            fi
+          done < "$release_assets"
+
+          built=""
+          if ((${#built_versions[@]})); then
+            built="$(printf '%s\n' "${built_versions[@]}" | sort -V | tail -n 1)"
+          fi
+
+          {
+            echo "latest=$latest"
+            echo "built=$built"
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "$built" == "$latest" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=UML kernel current::The default release already uses Linux $latest."
+            {
+              echo "## No update needed"
+              echo
+              echo "Kernel.org and the latest default UML release are both \`$latest\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=New UML kernel available::kernel.org has $latest; the latest default build is ${built:-none}."
+            {
+              echo "## New UML kernel detected"
+              echo
+              echo "Kernel.org: \`$latest\`"
+              echo
+              echo "Current default build: \`${built:-none}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Trigger updated default build
+        if: steps.comparison.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.comparison.outputs.latest }}
+        run: |
+          set -euo pipefail
+          gh workflow run build-kernel.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            -f kernel_series="$KERNEL_SERIES" \
+            -f kernel_version="$VERSION" \
+            -f base_image="$BASE_IMAGE" \
+            -f extra_configs= \
+            -f release_tag=
+          echo "Triggered the default UML build for Linux $VERSION." >> "$GITHUB_STEP_SUMMARY"

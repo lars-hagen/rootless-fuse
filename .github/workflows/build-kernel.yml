@@ -1,0 +1,392 @@
+name: Build UML kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_series:
+        description: Kernel LTS series
+        required: true
+        default: "6.18"
+        type: choice
+        options:
+          - "6.18"
+          - "6.12"
+      kernel_version:
+        description: Exact point release, or latest-lts for the selected series
+        required: true
+        default: latest-lts
+        type: string
+      base_image:
+        description: Build container and target glibc
+        required: true
+        default: amazonlinux:2023
+        type: string
+      extra_configs:
+        description: Space-separated Kconfig overrides, such as CONFIG_LTO_CLANG_THIN=y
+        required: false
+        default: ""
+        type: string
+      release_tag:
+        description: Optional release tag override
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read   # build job only; release job overrides to write
+
+concurrency:
+  group: uml-${{ inputs.kernel_series }}-${{ inputs.kernel_version }}-${{ inputs.base_image }}-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ inputs.base_image }}
+      options: --user root
+    outputs:
+      asset: ${{ steps.metadata.outputs.asset }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      title: ${{ steps.metadata.outputs.title }}
+      version: ${{ steps.metadata.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      BASE_IMAGE: ${{ inputs.base_image }}
+      EXTRA_CONFIGS: ${{ inputs.extra_configs }}
+      KERNEL_SERIES: ${{ inputs.kernel_series }}
+      REQUESTED_VERSION: ${{ inputs.kernel_version }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+
+    steps:
+      - name: Reject unsupported host architectures
+        run: |
+          set -euo pipefail
+          host_arch="$(uname -m)"
+          if [[ "$host_arch" != "x86_64" ]]; then
+            echo "::error title=Unsupported UML architecture::Upstream Linux ARCH=um supports x86_64 hosts only. AArch64 UML is not implemented; detected $host_arch."
+            exit 1
+          fi
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+
+          llvm_packages=()
+          if [[ " $EXTRA_CONFIGS " == *" CONFIG_LTO_CLANG"* ]]; then
+            llvm_packages=(clang llvm lld)
+          fi
+
+          if command -v dnf >/dev/null 2>&1; then
+            dnf install -y --allowerasing \
+              bc binutils bison curl diffutils elfutils-libelf-devel file \
+              findutils flex gcc gcc-c++ gzip jq make ncurses-devel \
+              openssl-devel perl tar xz "${llvm_packages[@]}"
+          elif command -v yum >/dev/null 2>&1; then
+            yum install -y --allowerasing \
+              bc binutils bison curl diffutils elfutils-libelf-devel file \
+              findutils flex gcc gcc-c++ gzip jq make ncurses-devel \
+              openssl-devel perl tar xz "${llvm_packages[@]}"
+          elif command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              bc binutils bison build-essential ca-certificates curl file flex \
+              jq libelf-dev libncurses-dev libssl-dev perl xz-utils \
+              "${llvm_packages[@]}"
+            rm -rf /var/lib/apt/lists/*
+          else
+            echo "::error::Unsupported package manager in $BASE_IMAGE. Use an apt, dnf, or yum based image."
+            exit 1
+          fi
+
+      - name: Resolve kernel and release metadata
+        id: metadata
+        run: |
+          set -euo pipefail
+
+          version="$REQUESTED_VERSION"
+          if [[ "$version" == "latest-lts" ]]; then
+            version="$({
+              curl -fsSL https://www.kernel.org/releases.json |
+                jq -r --arg prefix "${KERNEL_SERIES}." \
+                  '.releases[].version | select(startswith($prefix))'
+            } | sort -V | tail -n 1)"
+          fi
+
+          escaped_series="${KERNEL_SERIES//./\.}"
+          if [[ ! "$version" =~ ^${escaped_series}\.[0-9]+$ ]]; then
+            echo "::error::Expected a $KERNEL_SERIES point release, got: $version"
+            exit 1
+          fi
+
+          base_slug="$(
+            printf '%s' "$BASE_IMAGE" |
+              tr '[:upper:]' '[:lower:]' |
+              tr -cs 'a-z0-9._-' '-' |
+              sed 's/^-//; s/-$//'
+          )"
+          if [[ -z "$base_slug" ]]; then
+            echo "::error::Could not derive an asset slug from $BASE_IMAGE"
+            exit 1
+          fi
+
+          asset="linux-${version}-x86_64-${base_slug}"
+          tag="${RELEASE_TAG:-uml-v${version}-${base_slug}-x86_64}"
+          if [[ ! "$tag" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::Release tag contains unsupported characters: $tag"
+            exit 1
+          fi
+
+          if [[ "$BASE_IMAGE" == "amazonlinux:2023" ]]; then
+            image_label="AL2023"
+          else
+            image_label="$BASE_IMAGE"
+          fi
+
+          {
+            echo "asset=$asset"
+            echo "base_slug=$base_slug"
+            echo "tag=$tag"
+            echo "title=UML Kernel $version · x86_64 · $image_label"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download and verify kernel source
+        id: source
+        env:
+          VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          base_url="https://cdn.kernel.org/pub/linux/kernel/v6.x"
+          curl -fL --retry 3 --retry-delay 5 "${base_url}/linux-${VERSION}.tar.xz" -o linux.tar.xz
+          # kernel.org does not publish a .sha256 sidecar file (only .tar.sign PGP
+          # signatures), so record the tarball's own digest for release provenance
+          # rather than verifying against a nonexistent remote checksum.
+          source_sha256="$(sha256sum linux.tar.xz | cut -d' ' -f1)"
+          echo "sha256=$source_sha256" >> "$GITHUB_OUTPUT"
+          tar -xf linux.tar.xz
+          mv "linux-${VERSION}" source
+
+      - name: Configure UML kernel
+        id: configuration
+        run: |
+          set -euo pipefail
+          cd source
+
+          make_args=(ARCH=um)
+          use_llvm=false
+          if [[ " $EXTRA_CONFIGS " == *" CONFIG_LTO_CLANG"* ]]; then
+            make_args+=(LLVM=1)
+            use_llvm=true
+          fi
+
+          make "${make_args[@]}" defconfig
+          expected="$(mktemp)"
+
+          set_config() {
+            local token="$1"
+            local symbol value
+
+            if [[ ! "$token" =~ ^CONFIG_([A-Z0-9_]+)=(.+)$ ]]; then
+              echo "::error::Invalid configuration token: $token"
+              exit 1
+            fi
+
+            symbol="${BASH_REMATCH[1]}"
+            value="${BASH_REMATCH[2]}"
+            case "$value" in
+              y) scripts/config --enable "$symbol" ;;
+              m) scripts/config --module "$symbol" ;;
+              n) scripts/config --disable "$symbol" ;;
+              *)
+                if [[ "$value" =~ ^-?[0-9]+$ || "$value" =~ ^0x[0-9A-Fa-f]+$ ]]; then
+                  scripts/config --set-val "$symbol" "$value"
+                elif [[ "$value" == \"*\" ]]; then
+                  value="${value:1:${#value}-2}"
+                  scripts/config --set-str "$symbol" "$value"
+                  value="\"$value\""
+                else
+                  echo "::error::Unsupported value in configuration token: $token"
+                  exit 1
+                fi
+                ;;
+            esac
+            printf 'CONFIG_%s=%s\n' "$symbol" "$value" >> "$expected"
+          }
+
+          required_configs=(
+            CONFIG_FUSE_FS=y
+            CONFIG_HOSTFS=y
+            CONFIG_CUSE=y
+            CONFIG_UML_NET_VECTOR=y
+          )
+          for token in "${required_configs[@]}"; do
+            set_config "$token"
+          done
+
+          if [[ -n "$EXTRA_CONFIGS" ]]; then
+            read -r -a extra_tokens <<< "$EXTRA_CONFIGS"
+            for token in "${extra_tokens[@]}"; do
+              set_config "$token"
+            done
+          fi
+
+          make "${make_args[@]}" olddefconfig
+
+          failed=false
+          while IFS= read -r wanted; do
+            symbol="${wanted%%=*}"
+            value="${wanted#*=}"
+            if [[ "$value" == "n" ]]; then
+              if ! grep -qx "# ${symbol} is not set" .config; then
+                echo "::error::$wanted did not survive olddefconfig"
+                failed=true
+              fi
+            elif ! grep -qxF "$wanted" .config; then
+              echo "::error::$wanted did not survive olddefconfig"
+              failed=true
+            fi
+          done < "$expected"
+
+          if [[ "$failed" == true ]]; then
+            exit 1
+          fi
+
+          echo "llvm=$use_llvm" >> "$GITHUB_OUTPUT"
+
+      - name: Build optimized UML binary
+        env:
+          ASSET: ${{ steps.metadata.outputs.asset }}
+          USE_LLVM: ${{ steps.configuration.outputs.llvm }}
+        run: |
+          set -euo pipefail
+          cd source
+
+          make_args=(ARCH=um KCFLAGS=-O3)
+          if [[ "$USE_LLVM" == "true" ]]; then
+            make_args+=(LLVM=1)
+          fi
+          make "${make_args[@]}" -j"$(nproc)" linux
+
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          install -m 0755 linux "$GITHUB_WORKSPACE/out/$ASSET"
+          cp .config "$GITHUB_WORKSPACE/out/.config"
+          cd "$GITHUB_WORKSPACE/out"
+          sha256sum "$ASSET" > linux.sha256
+          file "$ASSET"
+          ldd "$ASSET" || true
+
+      - name: Generate release notes
+        env:
+          ASSET: ${{ steps.metadata.outputs.asset }}
+          BASE_SLUG: ${{ steps.metadata.outputs.base_slug }}
+          SOURCE_SHA256: ${{ steps.source.outputs.sha256 }}
+          TAG: ${{ steps.metadata.outputs.tag }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          cat > out/release-notes.md <<EOF
+          ## UML kernel $VERSION
+
+          - Kernel: \`$VERSION\`
+          - Source SHA-256: \`$SOURCE_SHA256\`
+          - Build image and target libc: \`$BASE_IMAGE\`
+          - Host architecture: \`x86_64\`
+          - Optimization: \`KCFLAGS=-O3\`
+          - Confirmed: \`CONFIG_FUSE_FS=y\`
+          - Confirmed: \`CONFIG_HOSTFS=y\`
+          - Confirmed: \`CONFIG_CUSE=y\`
+          - Confirmed: \`CONFIG_UML_NET_VECTOR=y\`
+
+          Install on TIKE:
+
+          \`\`\`bash
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/master/install.sh" | bash
+          \`\`\`
+
+          This also fetches the [\`Build VDE SLiRP networking toolchain\`](.github/workflows/build-vde-net.yml)
+          release and writes \`~/uml-init.sh\`, a PID-1-safe wrapper (a plain
+          \`init=/bin/bash\` panics the kernel the moment you \`exit\`).
+
+          ### Boot on TIKE
+
+          \`\`\`bash
+          # 1. Boot UML (home dir accessible via hostfs, VDE SLiRP networking enabled)
+          ~/linux-fuse.um mem=2G rootfstype=hostfs rootflags=/ rw init=~/uml-init.sh 'vec0:transport=vde,vnl=slirp://'
+
+          # 2. Inside UML — /dev/fuse now works because UML has its own kernel
+          mount -t proc proc /proc
+          mount -t devtmpfs devtmpfs /dev
+          mknod /dev/fuse c 10 229 && chmod 666 /dev/fuse
+
+          # 3. Bring up networking (interface is named vec0, not eth0)
+          ifconfig lo up
+          ifconfig vec0 10.0.2.15 netmask 255.255.255.0 up
+          route add default gw 10.0.2.2 vec0
+          mkdir -p /tmp && printf 'nameserver 10.0.2.3\\n' > /tmp/resolv.conf
+          mount --bind /tmp/resolv.conf /etc/resolv.conf
+
+          # 4. Mount a Databricks Unity Catalog volume via fuse4dbricks
+          export DATABRICKS_HOST="https://<workspace>.cloud.databricks.com"
+          export DATABRICKS_TOKEN="<personal-access-token>"
+          fuse4dbricks --workspace "\$DATABRICKS_HOST" --no-unified-auth \\
+            --single-principal ~/mnt-uc &
+          sleep 3 && ls ~/mnt-uc
+          \`\`\`
+
+          See the [\`Networking\`](README.md#networking) section for why \`eth0=\`
+          no longer works and how the hostfs write-permission restriction on
+          \`/etc/resolv.conf\` is handled.
+          EOF
+
+      - name: Upload staged release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: uml-release-${{ github.run_id }}
+          path: |
+            out/${{ steps.metadata.outputs.asset }}
+            out/linux.sha256
+            out/.config
+            out/release-notes.md
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      ASSET: ${{ needs.build.outputs.asset }}
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.build.outputs.tag }}
+      TITLE: ${{ needs.build.outputs.title }}
+
+    steps:
+      - name: Download staged release files
+        uses: actions/download-artifact@v4
+        with:
+          name: uml-release-${{ github.run_id }}
+          path: release
+
+      - name: Publish immutable GitHub Release
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists. Set release_tag for a custom rebuild."
+            exit 1
+          fi
+
+          gh release create "$TAG" \
+            "release/$ASSET#$ASSET" \
+            "release/linux.sha256#linux.sha256" \
+            "release/.config#.config" \
+            "release/release-notes.md#release-notes.md" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$TITLE" \
+            --notes-file release/release-notes.md

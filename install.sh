@@ -4,7 +4,7 @@ set -euo pipefail
 REPO="${ROOTLESS_FUSE_REPO:-lars-hagen/rootless-fuse}"
 DEST="${UML_INSTALL_DIR:-$HOME}"
 LOCAL_BIN="${ROOTLESS_FUSE_BIN_DIR:-$HOME/.local/bin}"
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd || true)"
 
 usage() {
   cat >&2 <<EOF

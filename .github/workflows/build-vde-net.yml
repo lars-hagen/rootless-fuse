@@ -184,6 +184,16 @@ jobs:
 
           ## Install
 
+          The main flow downloads this release together with the kernel and
+          writes the required PID-1-safe \`~/uml-init.sh\` wrapper for you:
+
+          \`\`\`bash
+          curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/master/install.sh" | bash -s -- uml
+          \`\`\`
+
+          To fetch just this toolchain standalone (for example if you manage
+          the kernel and \`uml-init.sh\` yourself):
+
           \`\`\`bash
           mkdir -p ~/vde-net
           curl -Ls -o vde-net.tar.gz \\
@@ -192,8 +202,13 @@ jobs:
 
           export PATH="\$HOME/vde-net/bin:\$PATH"
           export LD_LIBRARY_PATH="\$HOME/vde-net/lib:\$LD_LIBRARY_PATH"
+          \`\`\`
 
-          ~/linux-fuse.um mem=2G rootfstype=hostfs rootflags=/ rw init=/bin/bash 'vec0:transport=vde,vnl=slirp://'
+          Boot with a PID-1-safe init (plain \`init=/bin/bash\` panics the
+          kernel the moment you \`exit\`, see \`~/uml-init.sh\` above):
+
+          \`\`\`bash
+          ~/linux-fuse.um mem=2G rootfstype=hostfs rootflags=/ rw init=~/uml-init.sh 'vec0:transport=vde,vnl=slirp://'
           \`\`\`
 
           The vector driver names the interface \`vec0\`, not \`eth0\`; \`eth0=...\`

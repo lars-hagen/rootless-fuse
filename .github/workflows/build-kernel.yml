@@ -304,7 +304,7 @@ jobs:
           Install on TIKE:
 
           \`\`\`bash
-          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/master/install.sh" | bash
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/master/install.sh" | bash -s -- uml
           \`\`\`
 
           This also fetches the [\`Build VDE SLiRP networking toolchain\`](.github/workflows/build-vde-net.yml)

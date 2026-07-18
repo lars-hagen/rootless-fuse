@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-UML_KERNEL="${UML_KERNEL:-$HOME/linux-fuse.um}"
-UML_INIT="${UML_INIT:-$HOME/uml-init.sh}"
-VDE_NET="${VDE_NET:-$HOME/vde-net}"
+# install.sh always writes this script into the same directory as the
+# kernel, init wrapper, and VDE toolchain, so resolve relative to itself
+# rather than $HOME. That makes UML_INSTALL_DIR overrides at install time
+# work without also having to override these three at boot time.
+SELF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+UML_KERNEL="${UML_KERNEL:-$SELF_DIR/linux-fuse.um}"
+UML_INIT="${UML_INIT:-$SELF_DIR/uml-init.sh}"
+VDE_NET="${VDE_NET:-$SELF_DIR/vde-net}"
 UML_MEMORY="${UML_MEMORY:-2G}"
 
 if [[ ! -x "$UML_KERNEL" ]]; then

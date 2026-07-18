@@ -8,11 +8,6 @@ echo "=============================="
 
 arch="$(uname -m)"
 echo "Host architecture: $arch"
-if [[ "$arch" != "x86_64" ]]; then
-  echo "UML fallback: unavailable. Upstream Linux ARCH=um supports x86_64 only."
-  echo "IMPOSSIBLE"
-  exit 1
-fi
 
 fuse_filesystem=false
 if [[ -r /proc/filesystems ]]; then
@@ -56,9 +51,17 @@ elif [[ -e /dev/fuse ]]; then
 else
   echo "/dev/fuse: missing"
   if command -v unshare >/dev/null 2>&1; then
+    # Mirrors what the installed DIRECT wrapper does: mount a private
+    # devtmpfs first (avoids mutating the host's real /dev, and survives
+    # a nodev restriction on the host's own /dev mount since this is a
+    # fresh mount entirely), falling back to a plain mknod only if that
+    # private mount is not permitted.
     mknod_error="$(unshare --user --map-root-user --mount bash -c '
-      mknod /dev/fuse c 10 229 || exit
-      test -c /dev/fuse || exit
+      set -e
+      mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+      if [ -c /dev/fuse ]; then exit 0; fi
+      mknod /dev/fuse c 10 229
+      test -c /dev/fuse
       rm -f /dev/fuse
     ' 2>&1)" && mknod_status=0 || mknod_status=$?
     if ((mknod_status == 0)); then
@@ -86,7 +89,12 @@ if [[ "$userns_ok" == true && "$fuse_ok" == true ]]; then
   exit 0
 fi
 
-echo "Direct mode is unavailable; checking whether UML release downloads are reachable."
+echo "Direct mode is unavailable; checking the UML fallback."
+if [[ "$arch" != "x86_64" ]]; then
+  echo "UML fallback: unavailable. Upstream Linux ARCH=um supports x86_64 only."
+  echo "IMPOSSIBLE"
+  exit 1
+fi
 if ! command -v curl >/dev/null 2>&1; then
   echo "UML fallback cannot be installed because curl is unavailable."
   echo "IMPOSSIBLE"

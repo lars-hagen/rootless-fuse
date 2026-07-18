@@ -4,7 +4,13 @@ set -euo pipefail
 REPO="${ROOTLESS_FUSE_REPO:-lars-hagen/rootless-fuse}"
 DEST="${UML_INSTALL_DIR:-$HOME}"
 LOCAL_BIN="${ROOTLESS_FUSE_BIN_DIR:-$HOME/.local/bin}"
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd || true)"
+# Only trust a sibling script next to a real local install.sh (e.g. a git
+# checkout). Under `curl | bash`, BASH_SOURCE[0] is empty and must never
+# resolve to the caller's arbitrary current directory.
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+  SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+fi
 
 usage() {
   cat >&2 <<EOF
@@ -38,10 +44,21 @@ if [[ "$verdict" == "DIRECT" ]]; then
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Mount a private devtmpfs before doing anything else: a plain mount
+# namespace does not isolate ordinary file creation under the host's real
+# /dev, so mknod there either fails (nodev, permissions) or leaks a device
+# node into the shared host /dev. A fresh devtmpfs is namespace-private and
+# auto-populates every device the kernel currently exposes, /dev/fuse
+# included if the fuse module is loaded, so nothing else under /dev breaks.
+SETUP='mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+[ -c /dev/fuse ] || mknod /dev/fuse c 10 229 2>/dev/null || true
+chmod 666 /dev/fuse 2>/dev/null || true
+'
+
 if (($# == 0)); then
-  exec unshare --user --map-root-user --mount bash
+  exec unshare --user --map-root-user --mount bash -c "$SETUP"'exec bash'
 fi
-exec unshare --user --map-root-user --mount bash -c 'exec "$@"' bash "$@"
+exec unshare --user --map-root-user --mount bash -c "$SETUP"'exec "$@"' bash "$@"
 EOF
   chmod +x "$LOCAL_BIN/rootless-fuse-shell"
   cat <<EOF
@@ -112,7 +129,7 @@ done
 EOF
 chmod +x "$DEST/uml-init.sh"
 
-if [[ -f "$SCRIPT_DIR/boot-uml.sh" ]]; then
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/boot-uml.sh" ]]; then
   if [[ "$SCRIPT_DIR/boot-uml.sh" != "$DEST/boot-uml.sh" ]]; then
     cp "$SCRIPT_DIR/boot-uml.sh" "$DEST/boot-uml.sh"
   fi

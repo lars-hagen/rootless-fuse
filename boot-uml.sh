@@ -27,6 +27,43 @@ fi
 export PATH="$VDE_NET/bin:$PATH"
 export LD_LIBRARY_PATH="$VDE_NET/lib:${LD_LIBRARY_PATH:-}"
 
+# UML backs guest RAM with a real mmap'd file on this directory (defaults to
+# /dev/shm if TMPDIR is unset, matching UML's own probe order). That file is
+# paged in lazily as the guest touches memory, so a guest that boots fine can
+# still panic with a host bus error hours later once it touches enough pages
+# to exceed whatever space is actually available there. Containers commonly
+# cap /dev/shm at 64M, far below a 2G guest, so check before booting instead
+# of finding out mid-session.
+mem_bytes() {
+  local n="${1%[KkMmGg]}" unit="${1: -1}"
+  case "$unit" in
+    [Gg]) echo $((n * 1024 * 1024 * 1024)) ;;
+    [Mm]) echo $((n * 1024 * 1024)) ;;
+    [Kk]) echo $((n * 1024)) ;;
+    *) echo "$1" ;;
+  esac
+}
+shm_dir="${TMPDIR:-/dev/shm}"
+if [[ -d "$shm_dir" ]]; then
+  avail_kb="$(df -Pk "$shm_dir" 2>/dev/null | awk 'NR==2 {print $4}')"
+  if [[ -n "$avail_kb" ]]; then
+    avail_bytes=$((avail_kb * 1024))
+    need_bytes="$(mem_bytes "$UML_MEMORY")"
+    if (( avail_bytes < need_bytes )); then
+      cat >&2 <<EOF
+warning: $shm_dir has $((avail_bytes / 1024 / 1024))M free, but mem=$UML_MEMORY
+needs up to that much for the guest's RAM backing file. The guest may boot
+fine and then hit a host bus error later once it touches enough memory to
+exceed what is actually available here.
+
+Fix by pointing UML at a roomier directory, or lowering the memory request:
+  TMPDIR=/tmp $SELF_DIR/boot-uml.sh
+  UML_MEMORY=768M $SELF_DIR/boot-uml.sh
+EOF
+    fi
+  fi
+fi
+
 cat >&2 <<EOF
 The default $UML_INIT (written by install.sh) mounts proc/devtmpfs,
 creates /dev/fuse, and brings up vec0 networking automatically before

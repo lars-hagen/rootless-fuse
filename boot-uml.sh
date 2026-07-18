@@ -27,9 +27,9 @@ fi
 export PATH="$VDE_NET/bin:$PATH"
 export LD_LIBRARY_PATH="$VDE_NET/lib:${LD_LIBRARY_PATH:-}"
 
-# UML backs guest RAM with a real mmap'd file on this directory (defaults to
-# /dev/shm if TMPDIR is unset, matching UML's own probe order). That file is
-# paged in lazily as the guest touches memory, so a guest that boots fine can
+# UML backs guest RAM with a real mmap'd file in TMPDIR or one of the fallback
+# directories below. It is paged in lazily as the guest touches memory, so a
+# guest that boots fine can
 # still crash with a host bus error and a full kernel panic hours later, once
 # it touches enough pages to exceed whatever space is actually available.
 # Containers commonly cap /dev/shm at 64M, far below a 2G guest, and that
@@ -49,20 +49,15 @@ mem_bytes() {
   esac
 }
 
-if need_bytes="$(mem_bytes "$UML_MEMORY")"; then
-  # Headroom beyond the raw guest RAM request: UML's own bookkeeping and
-  # TT/SKAS overhead use a bit more than mem= alone.
-  mem_check_margin=$((64 * 1024 * 1024))
-  avail_bytes=""
+available_bytes() {
+  local shm_dir="$1" avail_bytes="" avail_kb cgroup_avail="" cg_max cg_cur
 
-  shm_dir="${TMPDIR:-/dev/shm}"
   if [[ -d "$shm_dir" ]] \
     && avail_kb="$(LC_ALL=C df -Pk "$shm_dir" 2>/dev/null | awk 'NR==2 {print $4}')" \
     && [[ "$avail_kb" =~ ^[0-9]+$ ]]; then
     avail_bytes=$((avail_kb * 1024))
   fi
 
-  cgroup_avail=""
   if [[ -r /sys/fs/cgroup/memory.max && -r /sys/fs/cgroup/memory.current ]]; then
     cg_max="$(cat /sys/fs/cgroup/memory.max 2>/dev/null || true)"
     cg_cur="$(cat /sys/fs/cgroup/memory.current 2>/dev/null || true)"
@@ -78,6 +73,90 @@ if need_bytes="$(mem_bytes "$UML_MEMORY")"; then
   fi
   if [[ -n "$cgroup_avail" ]] && { [[ -z "$avail_bytes" ]] || (( cgroup_avail < avail_bytes )); }; then
     avail_bytes="$cgroup_avail"
+  fi
+
+  echo "$avail_bytes"
+}
+
+human_bytes() {
+  local bytes="$1"
+  if (( bytes >= 1024 * 1024 * 1024 )); then
+    echo "$((bytes / 1024 / 1024 / 1024))G"
+  else
+    echo "$((bytes / 1024 / 1024))M"
+  fi
+}
+
+if need_bytes="$(mem_bytes "$UML_MEMORY")"; then
+  # Headroom beyond the raw guest RAM request: UML's own bookkeeping and
+  # TT/SKAS overhead use a bit more than mem= alone.
+  mem_check_margin=$((64 * 1024 * 1024))
+  if [[ "${UML_TMPDIR_AUTO:-}" == "0" ]]; then
+    shm_dir="${TMPDIR:-/dev/shm}"
+    avail_bytes="$(available_bytes "$shm_dir")"
+  else
+    candidates=()
+    [[ -n "${TMPDIR:-}" ]] && candidates+=("$TMPDIR")
+    for candidate in /dev/shm /tmp; do
+      duplicate=""
+      for existing in "${candidates[@]}"; do
+        [[ "$candidate" == "$existing" ]] && duplicate=1
+      done
+      [[ -z "$duplicate" ]] && candidates+=("$candidate")
+    done
+
+    checked_dirs=()
+    checked_avails=()
+    selected_index=""
+    for candidate in "${candidates[@]}"; do
+      candidate_avail="$(available_bytes "$candidate")"
+      checked_dirs+=("$candidate")
+      checked_avails+=("$candidate_avail")
+      if [[ -n "$candidate_avail" ]] && (( candidate_avail >= need_bytes + mem_check_margin )); then
+        selected_index=$((${#checked_dirs[@]} - 1))
+        break
+      fi
+    done
+
+    if [[ -n "$selected_index" ]]; then
+      avail_bytes="${checked_avails[selected_index]}"
+      if (( selected_index > 0 )); then
+        skipped=""
+        for ((i = 0; i < selected_index; i++)); do
+          [[ -n "$skipped" ]] && skipped+=", "
+          skipped+="${checked_dirs[i]} only has $(human_bytes "${checked_avails[i]:-0}") free"
+        done
+        export TMPDIR="${checked_dirs[selected_index]}"
+        echo "==> $skipped, using $TMPDIR ($(human_bytes "$avail_bytes") free) for UML's RAM-backing file instead." >&2
+      fi
+    elif [[ "${UML_ALLOW_MEMORY_OVERCOMMIT:-}" == "1" ]]; then
+      checked=""
+      for ((i = 0; i < ${#checked_dirs[@]}; i++)); do
+        [[ -n "$checked" ]] && checked+=", "
+        checked+="${checked_dirs[i]}: $(human_bytes "${checked_avails[i]:-0}") free"
+      done
+      echo "warning: checked $checked; none has enough room for mem=$UML_MEMORY plus headroom. Booting anyway because UML_ALLOW_MEMORY_OVERCOMMIT=1 is set." >&2
+      avail_bytes=""
+    else
+      {
+        echo "error: no checked directory has enough room for UML's RAM-backing file:"
+        for ((i = 0; i < ${#checked_dirs[@]}; i++)); do
+          echo "  ${checked_dirs[i]}: $(human_bytes "${checked_avails[i]:-0}") free"
+        done
+        cat <<EOF
+mem=$UML_MEMORY needs that much plus headroom. Booting anyway risks a host bus
+error and a full kernel panic mid-session, killing the guest.
+
+Fix by pointing UML at another roomier directory, or lowering the memory request:
+  TMPDIR=/path/to/roomy/directory $SELF_DIR/boot-uml.sh
+  UML_MEMORY=768M $SELF_DIR/boot-uml.sh
+
+Or boot anyway at your own risk:
+  UML_ALLOW_MEMORY_OVERCOMMIT=1 $SELF_DIR/boot-uml.sh
+EOF
+      } >&2
+      exit 1
+    fi
   fi
 
   if [[ -n "$avail_bytes" ]] && (( avail_bytes < need_bytes + mem_check_margin )); then

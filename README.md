@@ -63,11 +63,12 @@ Minimal guests may lack `ip`, so the printed setup uses `ifconfig` and `route`. 
 
 `~/uml-init.sh` is PID-1-safe. PID 1 exiting always panics Linux with `Attempted to kill init!`, so the wrapper respawns a fresh shell instead of using `init=/bin/bash` directly.
 
-UML backs guest RAM with a real mmap'd file on `$TMPDIR` (or `/dev/shm` if unset), paged in lazily as the guest touches memory. Containers commonly cap `/dev/shm` at 64M, far below the 2G default, and a guest that boots fine can still crash with a host bus error and a full kernel panic hours later once it runs out of room there. `boot-uml.sh` checks available space (filesystem and cgroup memory limit, whichever is tighter) against `mem=` before booting and refuses to start if it looks insufficient:
+UML backs guest RAM with a real mmap'd file, paged in lazily as the guest touches memory. Containers commonly cap `/dev/shm` at 64M, far below the 2G default, and a guest that boots fine can still crash with a host bus error and a full kernel panic hours later once it runs out of room there. `boot-uml.sh` checks available space (filesystem and cgroup memory limit, whichever is tighter) against `mem=` before booting. It tries `$TMPDIR` when set, then `/dev/shm`, then `/tmp`, exporting the first directory with enough room and printing a notice when it falls back. Set `UML_TMPDIR_AUTO=0` to check only `$TMPDIR` or `/dev/shm` and disable fallback:
 
 ```bash
 TMPDIR=/tmp ~/boot-uml.sh          # point at a roomier directory
 UML_MEMORY=768M ~/boot-uml.sh      # or ask for less memory
+UML_TMPDIR_AUTO=0 ~/boot-uml.sh    # disable automatic /tmp fallback
 UML_ALLOW_MEMORY_OVERCOMMIT=1 ~/boot-uml.sh   # boot anyway, at your own risk
 ```
 

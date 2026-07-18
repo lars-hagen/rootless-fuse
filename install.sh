@@ -133,7 +133,10 @@ mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 [ -c /dev/fuse ] || mknod /dev/fuse c 10 229 2>/dev/null || true
 chmod 666 /dev/fuse 2>/dev/null || true
 
-if [ -e /sys/class/net/vec0 ]; then
+# /sys is not mounted in this guest (hostfs would otherwise show the
+# host's own sysfs, which has no idea about UML's vec0 device), so check
+# /proc/net/dev instead, it is already mounted by the line above.
+if grep -q '^ *vec0:' /proc/net/dev 2>/dev/null; then
   ifconfig lo up 2>/dev/null || true
   ifconfig vec0 10.0.2.15 netmask 255.255.255.0 up 2>/dev/null || true
   route add default gw 10.0.2.2 vec0 2>/dev/null || true

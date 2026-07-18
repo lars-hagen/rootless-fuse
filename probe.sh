@@ -44,8 +44,18 @@ fuse_ok=false
 mknod_status=1
 mknod_error=""
 if [[ -c /dev/fuse ]]; then
-  fuse_ok=true
-  echo "/dev/fuse: existing character device"
+  # A character device node existing is not sufficient: verify it is
+  # actually the FUSE device (10:229, not some other node squatting on the
+  # path) and that it can be opened, since device-cgroup policy or file
+  # permissions can deny access even when the node itself looks right.
+  dev_major="$((0x$(stat -c '%t' /dev/fuse 2>/dev/null || echo 0)))"
+  dev_minor="$((0x$(stat -c '%T' /dev/fuse 2>/dev/null || echo 0)))"
+  if [[ "$dev_major" == "10" && "$dev_minor" == "229" ]] && ( : <>/dev/fuse ) 2>/dev/null; then
+    fuse_ok=true
+    echo "/dev/fuse: existing character device (10:229), opened successfully"
+  else
+    echo "/dev/fuse: character device exists but is not a usable FUSE device (major:minor $dev_major:$dev_minor, or open denied)"
+  fi
 elif [[ -e /dev/fuse ]]; then
   echo "/dev/fuse: exists but is not a character device"
 else
@@ -100,8 +110,20 @@ if ! command -v curl >/dev/null 2>&1; then
   echo "IMPOSSIBLE"
   exit 1
 fi
-if ! curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO/releases?per_page=1" >/dev/null; then
+releases_json="$(curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO/releases" 2>/dev/null || true)"
+if [[ -z "$releases_json" ]]; then
   echo "UML fallback cannot be installed because GitHub release downloads are unreachable."
+  echo "IMPOSSIBLE"
+  exit 1
+fi
+if ! grep -qE '"name": *"linux-[^"]*-x86_64-amazonlinux-2023"' <<<"$releases_json"; then
+  echo "UML fallback cannot be installed: no linux-*-x86_64-amazonlinux-2023 kernel release asset exists yet."
+  echo "IMPOSSIBLE"
+  exit 1
+fi
+if ! curl -fsSL --max-time 15 -r 0-0 -o /dev/null \
+  "https://github.com/$REPO/releases/download/vde-net-x86_64-amazonlinux-2023/vde-slirp-net-x86_64-amazonlinux-2023.tar.gz"; then
+  echo "UML fallback cannot be installed: the vde-net-x86_64-amazonlinux-2023 release asset was not found."
   echo "IMPOSSIBLE"
   exit 1
 fi

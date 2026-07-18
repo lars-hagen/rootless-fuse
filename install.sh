@@ -123,6 +123,14 @@ export USER="${USER:-$(id -un)}"
 export PATH="$DEST/vde-net/bin:\$PATH"
 export LD_LIBRARY_PATH="$DEST/vde-net/lib:\${LD_LIBRARY_PATH:-}"
 cd "\$HOME" 2>/dev/null || cd /
+export PS1='[uml guest] \w # '
+cat <<'BANNER'
+================================================================
+UML guest ready. \`exit\` only closes this shell, PID 1 respawns
+a new one instantly so the kernel does not panic. To actually
+shut the guest down, run:  poweroff -f
+================================================================
+BANNER
 while true; do
   bash --noprofile --norc
 done

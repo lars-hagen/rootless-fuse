@@ -8,6 +8,12 @@ Use FUSE in unprivileged Linux containers without requiring changes to the host.
 
 See [the architecture guide](docs/architecture.md) for the device, namespace, and `nodev` details.
 
+## Security boundary and intended use
+
+Rootless FUSE is intended for containers and environments you own or are authorized to administer. It does not elevate privileges on the host or grant access beyond the invoking user's existing permissions. The direct path creates an unprivileged mount namespace. The UML fallback boots a userspace kernel and provides `/dev/fuse` only inside that isolated guest.
+
+This is a compatibility mechanism, not a sandbox escape or a way to weaken host access controls. See [SECURITY.md](SECURITY.md) for reporting security issues.
+
 ## Quickstart
 
 Probe without installing:
